@@ -1,0 +1,18 @@
+{
+    "location_description": {
+        "base": "Create a detailed description for a {type} with the following elements:\nTheme: {theme}\nPurpose: {purpose}\n\nInclude visual details, atmosphere, and notable features.",
+        "variants": {
+            "combat": "Add combat-relevant features and tactical elements",
+            "puzzle": "Focus on mysterious elements and puzzle mechanics",
+            "treasure": "Emphasize valuable items and hidden riches"
+        }
+    },
+    "npc_dialog": {
+        "base": "Generate NPC dialogue for {name} who is {mood} in response to: {player_action}",
+        "variants": {
+            "friendly": "Create helpful and welcoming responses",
+            "hostile": "Generate threatening or aggressive dialogue",
+            "mysterious": "Create cryptic and mysterious responses"
+        }
+    }
+}

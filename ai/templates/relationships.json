@@ -1,0 +1,6 @@
+{
+  "location_description": [ "npc_dialog", "quest_description" ],
+  "npc_dialog": [ "location_description", "combat_narration" ],
+  "combat_narration": [ "npc_dialog", "location_description" ],
+  "quest_description": [ "npc_dialog", "location_description" ]
+}
