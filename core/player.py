@@ -116,17 +116,31 @@ class Player:
     def equip_item(self, item: Item) -> Dict[str, Any]:
         """Equip an item and return result"""
         if item.item_type.value == 'weapon':
+            # Check if item is already equipped
+            if self.attributes.get('equipped_weapon') == item:
+                return {'success': False, 'message': f"The {item.name} is already equipped."}
+
+            # Remove old weapon's effect
             old_weapon = self.attributes.get('equipped_weapon')
             if old_weapon:
                 self.attack_power -= old_weapon.effect_value
+
+            # Apply new weapon
             self.attributes['equipped_weapon'] = item
             self.attack_power += item.effect_value
             return {'success': True, 'message': f"You equip the {item.name}."}
         
         elif item.item_type.value == 'armor':
+            # Check if item is already equipped
+            if self.attributes.get('equipped_armor') == item:
+                return {'success': False, 'message': f"The {item.name} is already equipped."}
+
+            # Remove old armor's effect
             old_armor = self.attributes.get('equipped_armor')
             if old_armor:
                 self.defense -= old_armor.effect_value
+
+            # Apply new armor
             self.attributes['equipped_armor'] = item
             self.defense += item.effect_value
             return {'success': True, 'message': f"You equip the {item.name}."}

@@ -16,7 +16,7 @@ class DalleImageGenerator:
         self.cache_dir.mkdir(exist_ok=True)
 
     async def generate_location_image(self, location_name: str, description: str) -> Optional[str]:
-        """Generate an image for a location using DALL-E"""
+        """Generate and save an image for a location using DALL-E"""
         try:
             # Create a focused prompt for the location
             prompt = f"Fantasy RPG scene of {location_name}: {description}. Digital art style, detailed, atmospheric lighting."
@@ -40,6 +40,28 @@ class DalleImageGenerator:
 
         except Exception as e:
             print(f"Error generating location image: {e}")
+            return None
+
+    def _cache_image(self, image_url: str, prefix: str) -> Optional[str]:
+        """Download and cache an image, return the local path"""
+        try:
+            # Download the image
+            response = requests.get(image_url)
+            if response.status_code == 200:
+                # Create a unique filename
+                filename = f"{prefix}_{hash(image_url)}.png"
+                filepath = self.cache_dir / filename
+                
+                # Save the image
+                with open(filepath, "wb") as f:
+                    f.write(response.content)
+                    
+                return str(filepath)
+            
+            return None
+
+        except Exception as e:
+            print(f"Error caching image: {e}")
             return None
 
     async def generate_npc_image(self, npc_name: str, description: str) -> Optional[str]:
@@ -67,28 +89,6 @@ class DalleImageGenerator:
 
         except Exception as e:
             print(f"Error generating NPC image: {e}")
-            return None
-
-    def _cache_image(self, image_url: str, prefix: str) -> Optional[str]:
-        """Download and cache an image, return the local path"""
-        try:
-            # Download the image
-            response = requests.get(image_url)
-            if response.status_code == 200:
-                # Create a unique filename
-                filename = f"{prefix}_{hash(image_url)}.png"
-                filepath = self.cache_dir / filename
-                
-                # Save the image
-                with open(filepath, "wb") as f:
-                    f.write(response.content)
-                    
-                return str(filepath)
-            
-            return None
-
-        except Exception as e:
-            print(f"Error caching image: {e}")
             return None
 
 class ImageDisplay:

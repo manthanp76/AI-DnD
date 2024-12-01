@@ -351,7 +351,30 @@ class GameWorld:
 
             combat_text = []
 
-            if command == "attack":
+            # Handle equipment and item use during combat
+            if command.startswith('use'):
+                item_name = command[4:].strip()
+                for item in self.player.inventory:
+                    if item.name.lower() == item_name.lower():
+                        # Handle equipment items
+                        if item.item_type in [ItemType.WEAPON, ItemType.ARMOR]:
+                            result = self.player.equip_item(item)
+                            combat_text.append(result['message'])
+                            # Don't end combat turn for equipment changes
+                            return {
+                                'message': '\n'.join(combat_text),
+                                'next_situation': 'combat'
+                            }
+                        # Handle consumable items
+                        else:
+                            result = item.use(self.player, None)
+                            if result['success']:
+                                self.player.remove_item(item.id)
+                                combat_text.append(result['message'])
+                                # Consumables do use a combat turn
+                                enemy_attack = True
+
+            elif command == "attack":
                 # Player attack
                 damage = self.player.attack()
                 enemy.take_damage(damage)
@@ -379,6 +402,7 @@ class GameWorld:
             elif command == "defend":
                 self.player.add_status_effect('defending', 1)
                 combat_text.append("You take a defensive stance!")
+                enemy_attack = True
 
             elif command == "retreat":
                 # 50% chance to retreat successfully
@@ -392,34 +416,37 @@ class GameWorld:
                     }
                 else:
                     combat_text.append("You fail to retreat!")
+                    enemy_attack = True
 
             else:
                 combat_text.append("Invalid combat command!")
+                enemy_attack = True
 
-            # Enemy turn
-            damage, was_critical = enemy.attack()
-            
-            # Apply defensive stance reduction
-            if 'defending' in self.player.status_effects:
-                damage = max(1, damage // 2)
-                combat_text.append("Your defensive stance reduces the damage!")
-            
-            if was_critical:
-                combat_text.append(f"CRITICAL HIT! {enemy.name} strikes you for {damage} damage!")
-            else:
-                combat_text.append(f"{enemy.name} attacks for {damage} damage!")
+            # Enemy turn if applicable
+            if enemy_attack:
+                damage, was_critical = enemy.attack()
                 
-            self.player.take_damage(damage)
+                # Apply defensive stance reduction
+                if 'defending' in self.player.status_effects:
+                    damage = max(1, damage // 2)
+                    combat_text.append("Your defensive stance reduces the damage!")
+                
+                if was_critical:
+                    combat_text.append(f"CRITICAL HIT! {enemy.name} strikes you for {damage} damage!")
+                else:
+                    combat_text.append(f"{enemy.name} attacks for {damage} damage!")
+                    
+                self.player.take_damage(damage)
 
-            if self.player.hp <= 0:
-                combat_text.extend([
-                    "You have been defeated!",
-                    "Your journey ends here..."
-                ])
-                return {
-                    'message': "\n".join(combat_text),
-                    'next_situation': 'game_over'
-                }
+                if self.player.hp <= 0:
+                    combat_text.extend([
+                        "You have been defeated!",
+                        "Your journey ends here..."
+                    ])
+                    return {
+                        'message': "\n".join(combat_text),
+                        'next_situation': 'game_over'
+                    }
 
             # Update status
             combat_text.extend([
