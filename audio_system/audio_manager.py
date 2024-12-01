@@ -6,6 +6,8 @@ from pathlib import Path
 import hashlib
 import logging
 from typing import Dict, Any, Optional
+import os
+import tempfile
 
 class AudioManager:
     def __init__(self, api_key: str):
@@ -26,8 +28,8 @@ class AudioManager:
         self.current_audio = None
         self._volume = 1.0
 
-    async def speak(self, text: str, voice: str = "alloy") -> None:
-        """Generate and play speech for given text"""
+    def speak(self, text: str, voice: str = "alloy") -> None:
+        """Generate and play speech using OpenAI TTS"""
         try:
             # Create cache key from text and voice
             cache_key = hashlib.md5(f"{text}{voice}".encode()).hexdigest()
@@ -35,18 +37,18 @@ class AudioManager:
 
             # Check cache first
             if not cache_file.exists():
-                # Generate new audio file using OpenAI
-                response = await self.client.audio.speech.create(
+                # Use OpenAI's TTS API synchronously
+                response = self.client.audio.speech.create(
                     model="tts-1",
                     voice=voice,
                     input=text
                 )
                 
-                # Save to cache
+                # Save the binary content
                 with open(cache_file, "wb") as f:
                     f.write(response.content)
 
-            # Play the audio
+            # Play the audio using pygame
             sound = pygame.mixer.Sound(str(cache_file))
             self.description_channel.set_volume(self._volume)
             self.description_channel.play(sound)
@@ -54,6 +56,17 @@ class AudioManager:
 
         except Exception as e:
             logging.error(f"Error generating/playing speech: {e}")
+
+    def play_effect(self, effect_name: str) -> None:
+        """Play a sound effect"""
+        try:
+            effect_path = Path("assets/audio/effects") / effect_name
+            if effect_path.exists():
+                sound = pygame.mixer.Sound(str(effect_path))
+                self.effect_channel.set_volume(self._volume)
+                self.effect_channel.play(sound)
+        except Exception as e:
+            logging.error(f"Error playing effect {effect_name}: {e}")
 
     def stop_audio(self):
         """Stop current audio playback"""
