@@ -13,11 +13,23 @@ from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from PIL import Image, ImageTk
+import pygame
 
 from config.settings import Settings
 from core.game_world import GameWorld
 from core.player import Player
 from image_system.image_manager import GameImageManager
+from audio_system.audio_manager import AudioManager
+from audio_system.audio_description import AudioDescription
+
+from enum import Enum
+
+class SoundCategory(Enum):
+    MUSIC = "music"
+    EFFECTS = "effects"
+    AMBIENT = "ambient"
+    SPEECH = "speech"
+    MASTER = "master"
 
 # Load environment variables
 load_dotenv()
@@ -61,7 +73,7 @@ class AsyncTkinter:
         asyncio.run_coroutine_threadsafe(run(), self.loop)
 
 class GameGUI:
-    def __init__(self, root):
+    def __init__(self, root, audio_manager: Optional[AudioManager] = None):
         self.root = root
         self.root.title("D&D AI Dungeon Master")
         self.root.geometry("1200x800")
@@ -88,6 +100,15 @@ class GameGUI:
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
+
+        # Use provided audio manager or create a new one if none provided
+        self.audio_manager = audio_manager if audio_manager else AudioManager(api_key)
+
+        # Initialize audio systems
+        self.audio_description = AudioDescription(self.audio_manager)
+        
+        # Create audio control panel
+        self.create_audio_controls()
 
         # Initialize image manager
         self.image_manager = GameImageManager(root, api_key)
@@ -230,6 +251,59 @@ class GameGUI:
         # Hide combat frame initially
         self.combat_frame.grid_remove()
 
+    def create_audio_controls(self):
+        """Create simplified audio control panel"""
+        audio_frame = ttk.LabelFrame(self.root, text="Audio", padding="10")
+        audio_frame.grid(row=1, column=1, sticky=(tk.W, tk.E), pady=(10, 0))
+
+        # Volume control
+        volume_frame = ttk.Frame(audio_frame)
+        volume_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        ttk.Label(volume_frame, text="Volume:").pack(side=tk.LEFT)
+        
+        volume_scale = ttk.Scale(
+            volume_frame, 
+            from_=0, to=100, 
+            orient=tk.HORIZONTAL,
+            command=lambda v: self.audio_manager.set_volume(float(v)/100)
+        )
+        volume_scale.set(100)
+        volume_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Voice selection
+        voice_frame = ttk.Frame(audio_frame)
+        voice_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(voice_frame, text="Voice:").pack(side=tk.LEFT)
+        
+        self.voice_var = tk.StringVar(value="alloy")
+        voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        voice_menu = ttk.OptionMenu(voice_frame, self.voice_var, "alloy", *voices)
+        voice_menu.pack(side=tk.LEFT, padx=5)
+
+        # Description toggle
+        desc_frame = ttk.Frame(audio_frame)
+        desc_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.desc_var = tk.BooleanVar(value=True)
+        desc_check = ttk.Checkbutton(
+            desc_frame, 
+            text="Audio Descriptions",
+            variable=self.desc_var,
+            command=self.toggle_descriptions
+        )
+        desc_check.pack(side=tk.LEFT)
+
+    def update_volume(self, category: SoundCategory, volume: float):
+        """Update volume for a sound category"""
+        self.audio_manager.set_volume(category, volume)
+
+    def toggle_descriptions(self):
+        """Toggle audio descriptions"""
+        if not self.desc_var.get():
+            self.audio_manager.speech_generator.stop_description()
+
     def increase_font_size(self):
         """Increase font size with safety checks"""
         if self.current_font_size < self.max_font_size:
@@ -302,13 +376,17 @@ Type your character's name and press Enter.
         )
 
     async def handle_command(self, command: str):
-        """Process game commands"""
+        """Process game commands with audio"""
         try:
             # Handle special combat state
             if self.combat_state:
                 result = await self.game_world._handle_combat_action(command)
+                if result.get('combat_effect'):
+                    await self.audio_manager.play_effect(result['combat_effect'])
             else:
                 result = await self.game_world.handle_player_action({"command": command.lower()})
+                if result.get('sound_effect'):
+                    await self.audio_manager.play_effect(result['sound_effect'])
             
             # Update combat state based on result
             self.combat_state = (result.get('next_situation') == 'combat')
@@ -317,6 +395,25 @@ Type your character's name and press Enter.
             current_location = self.game_world.locations.get(self.player.current_location_id)
             if current_location:
                 await self.show_location_image(current_location)
+                
+                # Update ambient sound based on location
+                await self.audio_manager.change_ambient(current_location.theme)
+                
+                # Generate audio description for new location
+                if result.get('new_location', False):
+                    await self.audio_description.describe_scene({
+                        'location': current_location.get_state(),
+                        'in_combat': self.combat_state,
+                        'player_hp': self.player.hp,
+                        'player_max_hp': self.player.max_hp,
+                        'enemy': self.game_world.current_state.get('current_enemy', {})
+                    })
+            
+            # Handle music changes
+            if result.get('next_situation') == 'combat' and not self.combat_state:
+                await self.audio_manager.change_music('combat')
+            elif result.get('next_situation') == 'exploration' and self.combat_state:
+                await self.audio_manager.change_music('exploration')
             
             # Show the action result - single output
             self.write_to_output(f"{result.get('message', 'You proceed with your action.')}\n")
@@ -332,6 +429,7 @@ Type your character's name and press Enter.
             self.write_to_output(f"\nError processing command: {str(e)}\n")
             self.write_to_output("\nAvailable commands: look, help\n")
             return None
+
 
     def handle_command_complete(self, result):
         """Handle completion of command processing"""
@@ -534,9 +632,61 @@ Type your character's name and press Enter.
         except Exception as e:
             print(f"Error displaying image: {e}")
 
+    def check_audio_setup():
+        """Setup audio system and verify files"""
+        try:
+            # Initialize pygame mixer
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+            
+            # Create required directories
+            audio_dirs = {
+                'effects': [
+                    'sword_hit.wav', 'sword_miss.wav', 'critical_hit.wav',
+                    'monster_hit.wav', 'monster_die.wav', 'player_hit.wav',
+                    'player_hit_critical.wav', 'player_die.wav', 'shield_block.wav',
+                    'combat_start.wav', 'retreat_success.wav', 'retreat_fail.wav',
+                    'item_pickup.wav', 'item_use.wav', 'potion_use.wav',
+                    'equip_weapon.wav', 'equip_armor.wav', 'item_discover.wav',
+                    'footsteps.wav', 'examine.wav', 'search.wav', 'dialog.wav',
+                    'menu_open.wav', 'action_generic.wav', 'level_up.wav'
+                ],
+                'ambient': [
+                    'forest_ambient.wav', 'cave_ambient.wav', 'dungeon_ambient.wav',
+                    'village_ambient.wav', 'combat_ambient.wav'
+                ],
+                'music': [
+                    'main_theme.mp3', 'exploration.mp3', 'combat.mp3',
+                    'victory.mp3', 'defeat.mp3'
+                ]
+            }
+
+            base_path = Path('assets/audio')
+            for category, files in audio_dirs.items():
+                category_path = base_path / category
+                category_path.mkdir(parents=True, exist_ok=True)
+                
+                # Check for missing files
+                missing = []
+                for filename in files:
+                    if not (category_path / filename).exists():
+                        missing.append(filename)
+                
+                if missing:
+                    print(f"Missing {category} files: {', '.join(missing)}")
+                    # Here you could add code to extract or download missing files
+
+        except Exception as e:
+            print(f"Error setting up audio: {e}")
+            return False
+        
+        return True
+
     def cleanup(self):
-        """Cleanup resources when closing"""
-        self.async_tk.stop()
+        """Cleanup resources including audio"""
+        if hasattr(self, 'audio_manager'):
+            self.audio_manager.cleanup()
+        if hasattr(self, 'async_tk'):
+            self.async_tk.stop()
         self.root.destroy()
 
     def configure_styles(self):
@@ -575,23 +725,38 @@ Type your character's name and press Enter.
                        troughcolor=COLORS['bg_medium'],
                        background=COLORS['accent_primary'])
 
+def check_audio_setup():
+    """Minimal audio setup check"""
+    try:
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+        Path("cache/audio").mkdir(parents=True, exist_ok=True)
+        return True
+    except Exception as e:
+        print(f"Error setting up audio: {e}")
+        return False
+        Path(directory).mkdir(parents=True, exist_ok=True)
+
 def main():
+    # Load OpenAI API key
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not found in environment variables")
+
+    check_audio_setup()  # Verify sound files exist
     root = tk.Tk()
     root.minsize(1200, 800)
     
-    # Configure window style
-    if tk.TkVersion >= 8.5:
-        try:
-            root.tk.call('tk', 'scaling', 1.0)
-        except:
-            pass
-        
-    app = GameGUI(root)
+    # Initialize audio manager with OpenAI API key
+    audio_manager = AudioManager(api_key)
+    
+    # Create game GUI
+    app = GameGUI(root=root, audio_manager=audio_manager)
     app.configure_styles()
     
-    # Set up cleanup on window close
-    root.protocol("WM_DELETE_WINDOW", app.cleanup)
+    # Add audio controls to GUI
+    app.create_audio_controls()
     
+    root.protocol("WM_DELETE_WINDOW", app.cleanup)
     root.mainloop()
 
 if __name__ == "__main__":

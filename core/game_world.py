@@ -11,13 +11,19 @@ from core.player import Player
 from entities.npcs import NPC, NPCFactory, NPCType, NPCBehavior
 from entities.items import Item, ItemFactory, ItemType, ItemRarity
 from utils.dice import DiceRoller
+from audio_system.audio_manager import AudioManager
+from audio_system.audio_description import AudioDescription
 
 class GameWorld:
-    def __init__(self):
+    def __init__(self, audio_manager: Optional[AudioManager] = None):
         self.locations: Dict[str, Location] = {}
         self.player: Optional[Player] = None
         self.game_time = datetime.now()
+        self.audio_manager = audio_manager
+        
+        # Initialize AI Generator
         self.ai_generator = AIGenerator()
+        
         self.current_state = {
             'combat_active': False,
             'current_enemy': None,
@@ -200,10 +206,10 @@ class GameWorld:
             ]
         )
 
-    def _create_fallback_location(self) -> Location:
+    def _create_fallback_location(self, location_id: str = "starting_area", direction: str = "north") -> Location:
         """Create a basic location if generation fails"""
         location = Location(
-            id="starting_area",
+            id=location_id,
             name="Tranquil Haven",
             description="""A peaceful clearing surrounded by ancient trees. A gentle breeze carries 
             the scent of wildflowers, and sunlight filters through the canopy above.""",
@@ -339,7 +345,7 @@ class GameWorld:
             }
 
     async def _handle_combat_action(self, command: str) -> Dict:
-        """Handle combat actions"""
+        """Handle combat actions with sound effects"""
         try:
             enemy = self.current_state.get('current_enemy')
             if not enemy:
@@ -350,6 +356,11 @@ class GameWorld:
                 }
 
             combat_text = []
+            result = {
+                'message': '',
+                'next_situation': 'combat',
+                'combat_effect': None
+            }
 
             # Handle equipment and item use during combat
             if command.startswith('use'):
@@ -358,20 +369,18 @@ class GameWorld:
                     if item.name.lower() == item_name.lower():
                         # Handle equipment items
                         if item.item_type in [ItemType.WEAPON, ItemType.ARMOR]:
-                            result = self.player.equip_item(item)
-                            combat_text.append(result['message'])
-                            # Don't end combat turn for equipment changes
-                            return {
-                                'message': '\n'.join(combat_text),
-                                'next_situation': 'combat'
-                            }
+                            equip_result = self.player.equip_item(item)
+                            combat_text.append(equip_result['message'])
+                            result['combat_effect'] = 'equip_weapon' if item.item_type == ItemType.WEAPON else 'equip_armor'
+                            result['message'] = '\n'.join(combat_text)
+                            return result
                         # Handle consumable items
                         else:
-                            result = item.use(self.player, None)
-                            if result['success']:
+                            use_result = item.use(self.player, None)
+                            if use_result['success']:
                                 self.player.remove_item(item.id)
-                                combat_text.append(result['message'])
-                                # Consumables do use a combat turn
+                                combat_text.append(use_result['message'])
+                                result['combat_effect'] = 'potion_use' if 'potion' in item.name.lower() else 'item_use'
                                 enemy_attack = True
 
             elif command == "attack":
@@ -379,6 +388,14 @@ class GameWorld:
                 damage = self.player.attack()
                 enemy.take_damage(damage)
                 combat_text.append(f"You strike {enemy.name} for {damage} damage!")
+                
+                # Add appropriate combat sound effect
+                if damage > 0:
+                    result['combat_effect'] = 'sword_hit'
+                    if damage >= self.player.attack_power * 1.5:  # Critical hit
+                        result['combat_effect'] = 'critical_hit'
+                else:
+                    result['combat_effect'] = 'sword_miss'
 
                 if enemy.is_defeated:
                     xp_gained = NPCFactory.calculate_xp_reward(enemy)
@@ -391,38 +408,42 @@ class GameWorld:
                     
                     if level_up:
                         combat_text.append(f"Level Up! You are now level {self.player.level}!")
+                        result['combat_effect'] = 'level_up'
+                    else:
+                        result['combat_effect'] = 'monster_die'
 
                     self.current_state['combat_active'] = False
                     self.current_state['current_enemy'] = None
-                    return {
-                        'message': "\n".join(combat_text),
-                        'next_situation': 'exploration'
-                    }
+                    result['message'] = "\n".join(combat_text)
+                    result['next_situation'] = 'exploration'
+                    return result
 
             elif command == "defend":
                 self.player.add_status_effect('defending', 1)
                 combat_text.append("You take a defensive stance!")
+                result['combat_effect'] = 'shield_block'
                 enemy_attack = True
 
             elif command == "retreat":
                 # 50% chance to retreat successfully
                 if random.random() < 0.5:
                     combat_text.append("You successfully retreat from combat!")
+                    result['combat_effect'] = 'retreat_success'
                     self.current_state['combat_active'] = False
                     self.current_state['current_enemy'] = None
-                    return {
-                        'message': "\n".join(combat_text),
-                        'next_situation': 'exploration'
-                    }
+                    result['message'] = "\n".join(combat_text)
+                    result['next_situation'] = 'exploration'
+                    return result
                 else:
                     combat_text.append("You fail to retreat!")
+                    result['combat_effect'] = 'retreat_fail'
                     enemy_attack = True
 
             else:
                 combat_text.append("Invalid combat command!")
                 enemy_attack = True
 
-            # Enemy turn if applicable
+            # Enemy turn
             if enemy_attack:
                 damage, was_critical = enemy.attack()
                 
@@ -433,8 +454,10 @@ class GameWorld:
                 
                 if was_critical:
                     combat_text.append(f"CRITICAL HIT! {enemy.name} strikes you for {damage} damage!")
+                    result['combat_effect'] = 'player_hit_critical'
                 else:
                     combat_text.append(f"{enemy.name} attacks for {damage} damage!")
+                    result['combat_effect'] = 'player_hit'
                     
                 self.player.take_damage(damage)
 
@@ -443,10 +466,10 @@ class GameWorld:
                         "You have been defeated!",
                         "Your journey ends here..."
                     ])
-                    return {
-                        'message': "\n".join(combat_text),
-                        'next_situation': 'game_over'
-                    }
+                    result['combat_effect'] = 'player_die'
+                    result['message'] = "\n".join(combat_text)
+                    result['next_situation'] = 'game_over'
+                    return result
 
             # Update status
             combat_text.extend([
@@ -459,10 +482,8 @@ class GameWorld:
                 "- retreat: Try to flee from combat"
             ])
 
-            return {
-                'message': "\n".join(combat_text),
-                'next_situation': 'combat'
-            }
+            result['message'] = "\n".join(combat_text)
+            return result
 
         except Exception as e:
             logging.error(f"Error in combat: {e}")
@@ -546,47 +567,96 @@ class GameWorld:
             logging.error(f"Error populating location: {e}")
             
     async def handle_player_action(self, action: Dict) -> Dict:
-        """Handle player choice and generate response"""
+        """Handle player actions with sound effects"""
         try:
             command = action['command'].lower()
             current_location = self.locations.get(self.player.current_location_id)
             
             if not current_location:
-                return {'message': "Error: Location not found", 'next_situation': 'exploration'}
+                return {
+                    'message': "Error: Location not found",
+                    'next_situation': 'exploration'
+                }
 
-            # Handle combat state
-            if self.current_state['combat_active']:
-                if command.startswith('use'):
-                    # Handle item use in combat
-                    return await self._handle_item_use(command[4:].strip(), current_location)
-                else:
-                    # Handle other combat actions
-                    return await self._handle_combat_action(command)
+            result = {
+                'message': '',
+                'next_situation': 'exploration',
+                'sound_effect': None,
+                'new_location': False
+            }
 
-            # If initiating combat
+            # Handle combat initiation
             if command.startswith('attack'):
-                return await self._initiate_combat(command[7:].strip(), current_location)
+                target_name = command[7:].strip()
+                combat_result = await self._initiate_combat(target_name, current_location)
+                combat_result['sound_effect'] = 'combat_start'
+                return combat_result
 
-            # Handle non-combat actions...
+            # Parse command parts
             parts = command.split(' ', 1)
             base_command = parts[0]
             argument = parts[1] if len(parts) > 1 else ''
 
-            handlers = {
-                'move': self._handle_movement,
-                'take': self._handle_item_take,
-                'use': self._handle_item_use,
-                'inventory': self._handle_inventory,
-                'examine': self._handle_examine,
-                'look': self._handle_examine,
-                'search': self._handle_search
-            }
+            # Handle movement
+            if command.startswith('move'):
+                move_result = await self._handle_movement(argument, current_location)
+                if move_result.get('next_situation') == 'exploration':
+                    move_result['sound_effect'] = 'footsteps'
+                    if argument.lower() in current_location.exits:
+                        move_result['new_location'] = True
+                return move_result
 
-            handler = handlers.get(base_command)
-            if handler:
-                return await handler(argument, current_location)
+            # Handle item taking
+            elif command.startswith('take'):
+                take_result = await self._handle_item_take(argument, current_location)
+                if take_result.get('message', '').startswith('You pick up'):
+                    take_result['sound_effect'] = 'item_pickup'
+                return take_result
 
-            return await self._generate_action_response(command, current_location)
+            # Handle item usage
+            elif command.startswith('use'):
+                use_result = await self._handle_item_use(argument, current_location)
+                if use_result.get('success', False):
+                    if 'potion' in argument.lower():
+                        use_result['sound_effect'] = 'potion_use'
+                    elif 'weapon' in argument.lower():
+                        use_result['sound_effect'] = 'equip_weapon'
+                    elif 'armor' in argument.lower():
+                        use_result['sound_effect'] = 'equip_armor'
+                    else:
+                        use_result['sound_effect'] = 'item_use'
+                return use_result
+
+            # Handle inventory
+            elif command == 'inventory':
+                inv_result = await self._handle_inventory(argument, current_location)
+                inv_result['sound_effect'] = 'menu_open'
+                return inv_result
+
+            # Handle examination
+            elif command.startswith(('examine', 'look')):
+                examine_result = await self._handle_examine(argument, current_location)
+                examine_result['sound_effect'] = 'examine'
+                return examine_result
+
+            # Handle searching
+            elif command.startswith('search'):
+                search_result = await self._handle_search(argument, current_location)
+                search_result['sound_effect'] = 'search'
+                if 'find' in search_result.get('message', '').lower():
+                    search_result['sound_effect'] = 'item_discover'
+                return search_result
+
+            # Handle special interactions
+            elif command.startswith(('talk', 'speak')):
+                interaction_result = await self._handle_dialog(argument, current_location)
+                interaction_result['sound_effect'] = 'dialog'
+                return interaction_result
+
+            # Generate response for other actions
+            result = await self._generate_action_response(command, current_location)
+            result['sound_effect'] = 'action_generic'
+            return result
 
         except Exception as e:
             logging.error(f"Error handling action: {e}")
@@ -594,7 +664,7 @@ class GameWorld:
                 'message': "Something went wrong with that action.",
                 'next_situation': 'exploration'
             }
-        
+                
     def _end_combat(self) -> None:
         """Clean up combat state"""
         self.current_state['combat_active'] = False
