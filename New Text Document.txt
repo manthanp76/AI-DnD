@@ -1,0 +1,48 @@
+Looking at the directory tree, the main structure is correct and well-organized. The only thing missing in terms of structure is content in the `assets/audio/effects` directory.
+
+Here are the sound effects (.wav files) you need to add to `assets/audio/effects/`:
+
+1. Combat-related:
+- sword_hit.wav
+- sword_miss.wav
+- critical_hit.wav
+- monster_hit.wav
+- monster_die.wav
+- player_hit.wav
+- player_hit_critical.wav
+- player_die.wav
+- shield_block.wav
+- combat_start.wav
+- retreat_success.wav
+- retreat_fail.wav
+
+2. Item interaction:
+- item_pickup.wav
+- item_use.wav
+- potion_use.wav
+- equip_weapon.wav
+- equip_armor.wav
+- item_discover.wav
+
+3. Movement and exploration:
+- footsteps.wav
+- examine.wav
+- search.wav
+- dialog.wav
+
+4. UI sounds:
+- menu_open.wav
+- action_generic.wav
+- level_up.wav
+
+You can find these types of sound effects from sources like:
+- OpenGameArt.org
+- FreeSoundEffects.com
+- FreeSound.org
+
+Make sure the sound files are:
+- In .wav format
+- Named exactly as listed above
+- Placed in the `assets/audio/effects` directory
+
+The directory structure itself is complete and correctly organized - you just need to add these sound effect files to have the full audio experience working.

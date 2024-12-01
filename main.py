@@ -58,21 +58,15 @@ class AsyncTkinter:
         self.thread.join()
         self.thread_pool.shutdown()
         
-    async def async_run(self, func, *args, **kwargs):
-        """Run a coroutine in the event loop"""
-        return await func(*args, **kwargs)
-        
-    def run_coroutine(self, coroutine, callback=None):
-        """Run a coroutine and optionally call a callback with the result"""
-        async def run():
+    def run_coroutine(self, coroutine):
+        """Run a coroutine in the event loop and handle errors"""
+        async def wrapped_coroutine():
             try:
-                result = await coroutine
-                if callback:
-                    self.root.after(0, callback, result)
+                await coroutine
             except Exception as e:
                 print(f"Error in coroutine: {e}")
                 
-        asyncio.run_coroutine_threadsafe(run(), self.loop)
+        asyncio.run_coroutine_threadsafe(wrapped_coroutine(), self.loop)
 
 class GameGUI:
     def __init__(self, root, audio_manager: Optional[AudioManager] = None):
@@ -80,46 +74,49 @@ class GameGUI:
         self.root.title("D&D AI Dungeon Master")
         self.root.geometry("1200x800")
 
+        # Initialize async support first
+        self.async_tk = AsyncTkinter(root)
+        self.async_tk.start()
+
         # Font configuration
         self.current_font_size = 11
         self.min_font_size = 8
         self.max_font_size = 20
-
-        # Initialize async support
-        self.async_tk = AsyncTkinter(root)
-        self.async_tk.start()
-
-        # Initialize game components
-        self.settings = Settings()
-        self.game_world = GameWorld()
-        self.player = None
-        self.command_queue = queue.Queue()
-        self.response_queue = queue.Queue()
-        self.game_state = "naming"
-        self.combat_state = False
 
         # Get API key from environment
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
 
-        # Use provided audio manager or create a new one if none provided
+        # Initialize audio manager if not provided
         self.audio_manager = audio_manager if audio_manager else AudioManager(api_key)
 
-        # Initialize audio systems
+        # Initialize game components
+        self.settings = Settings()
+        self.game_world = GameWorld(audio_manager=self.audio_manager)
+        self.player = None
+        self.command_queue = queue.Queue()
+        self.response_queue = queue.Queue()
+        self.game_state = "naming"
+        self.combat_state = False
+
+        # Initialize audio description
         self.audio_description = AudioDescription(self.audio_manager)
         
-        # Create audio control panel
-        self.create_audio_controls()
-
-        # Initialize image manager
-        self.image_manager = GameImageManager(root, api_key)
+        # Create voice selection variable
+        self.voice_var = tk.StringVar(value="alloy")
 
         # Create GUI elements
         self.create_enhanced_gui()
         
-        # Start game setup
-        self.setup_game()
+        # Create audio controls
+        self.create_audio_controls()
+        
+        # Initialize image manager
+        self.image_manager = GameImageManager(root, api_key)
+        
+        # Start game setup using async_tk
+        self.async_tk.run_coroutine(self.setup_game())
 
     def create_enhanced_gui(self):
         """Create GUI elements with enhanced styling"""
@@ -304,7 +301,8 @@ class GameGUI:
     def toggle_descriptions(self):
         """Toggle audio descriptions"""
         if not self.desc_var.get():
-            self.audio_manager.speech_generator.stop_description()
+            self.audio_manager.stop_audio()  # Use the existing stop_audio method
+        self.audio_description.toggle_descriptions(self.desc_var.get())
 
     def increase_font_size(self):
         """Increase font size with safety checks"""
@@ -338,9 +336,11 @@ class GameGUI:
         except Exception as e:
             print(f"Error updating fonts: {e}")
 
+    
     def setup_game(self):
         """Initialize the game"""
-        welcome_text = """
+        async def setup():
+            welcome_text = """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                     Welcome to D&D AI Dungeon Master!                        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -348,8 +348,17 @@ class GameGUI:
 What is your character's name?
 Type your character's name and press Enter.
 """
-        self.write_to_output(welcome_text)
-        self.game_state = "naming"
+            self.write_to_output(welcome_text)
+            try:
+                await self.audio_manager.speak(
+                    "Welcome to D&D AI Dungeon Master! What is your character's name?",
+                    voice=self.voice_var.get()
+                )
+            except Exception as e:
+                print(f"Error in speech: {e}")
+            self.game_state = "naming"
+
+        return setup()
 
     def handle_input(self, event=None):
         """Handle player input"""
@@ -359,23 +368,35 @@ Type your character's name and press Enter.
         if not command:
             return
 
-        if self.game_state == "naming":
-            self.player = Player(name=command)
-            self.game_world.player = self.player
-            self.game_world.root = self.root
-            self.game_state = "playing"
-            self.write_to_output(f"\nWelcome, {command}!\n")
-            self.async_tk.run_coroutine(
-                self.initialize_game_world(),
-                self.handle_initialization_complete
-            )
-            return
+        async def process_input():
+            if self.game_state == "naming":
+                self.player = Player(name=command)
+                self.game_world.player = self.player
+                self.game_world.root = self.root
+                self.game_state = "playing"
+                self.write_to_output(f"\nWelcome, {command}!\n")
+                try:
+                    await self.audio_manager.speak(f"Welcome, {command}!", voice=self.voice_var.get())
+                    await self.initialize_game_world()
+                except Exception as e:
+                    print(f"Error in initialization: {e}")
+                return
 
-        self.write_to_output(f"\n> {command}\n")
-        self.async_tk.run_coroutine(
-            self.process_command(command),
-            self.handle_command_complete
-        )
+            # Write command to output once
+            self.write_to_output(f"\n> {command}\n")
+            
+            # Process command and handle result
+            async def handle_command_wrapper():
+                try:
+                    result = await self.process_command(command)
+                    self.handle_command_complete(result)
+                except Exception as e:
+                    print(f"Error processing command: {e}")
+                    self.write_to_output("\nError processing command. Try again.\n")
+
+            self.async_tk.run_coroutine(handle_command_wrapper())
+
+        self.async_tk.run_coroutine(process_input())
 
     async def handle_command(self, command: str):
         """Process game commands with audio"""
@@ -531,14 +552,14 @@ Type your character's name and press Enter.
             # Initial message
             init_message = "\nInitializing game world...\n"
             self.write_to_output(init_message)
-            self.audio_manager.speak(init_message.strip(), voice=self.voice_var.get())
+            await self.audio_manager.speak(init_message.strip(), voice=self.voice_var.get())
             
             # Generate starting location
             starting_location = await self.game_world.generate_starting_location()
             
             if not starting_location:
                 raise Exception("Failed to generate starting location")
-                    
+                        
             self.player.current_location_id = starting_location.id
             
             # Display initial location
@@ -555,16 +576,19 @@ Type your character's name and press Enter.
                     self.write_to_output("\n" + "═"*80 + "\n")
                     
                     # Narrate description
-                    self.audio_manager.speak(location_desc, voice=self.voice_var.get())
+                    await self.audio_manager.speak(location_desc, voice=self.voice_var.get())
+                    await asyncio.sleep(0.5)  # Brief pause
                     
-                    # Show available commands
+                    # Show and narrate available commands
                     cmd_text = "\nAvailable commands: look, move [direction], take [item], use [item], inventory, attack [target]\n"
                     self.write_to_output(cmd_text)
-                    self.audio_manager.speak("Here are your available commands: look around, move in a direction, take items, use items, check inventory, or attack targets.", 
-                                        voice=self.voice_var.get())
+                    
+                    commands_speech = "Here are your available commands: look around, move in a direction, take items, use items, check inventory, or attack targets."
+                    await self.audio_manager.speak(commands_speech, voice=self.voice_var.get())
                 
                 except Exception as e:
                     print(f"Error setting up initial location: {e}")
+                    raise
             
             self.update_status()
             
@@ -572,29 +596,65 @@ Type your character's name and press Enter.
             error_msg = f"\nError during initialization: {str(e)}\n"
             self.write_to_output(error_msg)
             self.write_to_output("\nAvailable commands: look, help\n")
-            self.audio_manager.speak("Sorry, there was an error initializing the game world.", 
-                                voice=self.voice_var.get())
-
+            await self.audio_manager.speak(
+                "Sorry, there was an error initializing the game world.",
+                voice=self.voice_var.get()
+            )
+                                    
     async def process_command(self, command: str):
-        """Process game commands"""
+        """Process game commands with audio and visual feedback"""
         try:
             # Handle special combat state
             if self.combat_state:
                 result = await self.game_world._handle_combat_action(command)
+                if result.get('combat_effect'):
+                    self.audio_manager.play_effect(result['combat_effect'])
+                    
+                # Add voice response for combat
+                if result.get('message'):
+                    await self.audio_manager.speak(result['message'], voice=self.voice_var.get())
+                    
             else:
                 result = await self.game_world.handle_player_action({"command": command.lower()})
+                if result.get('sound_effect'):
+                    self.audio_manager.play_effect(result['sound_effect'])
             
             # Update combat state based on result
             self.combat_state = (result.get('next_situation') == 'combat')
             
-            # Update images based on command result
+            # Handle new location updates sequentially
             current_location = self.game_world.locations.get(self.player.current_location_id)
-            if current_location:
+            if current_location and result.get('new_location', False):
+                # Stop any current audio before new description
+                self.audio_manager.stop_audio()
+                
+                # First load the image
                 await self.show_location_image(current_location)
+                
+                # Then do ONE description with both visual and audio
+                location_desc = current_location.get_current_description()
+                self.write_to_output(f"{location_desc}\n")
+                
+                # Do the audio description last
+                await self.audio_description.describe_scene({
+                    'location': current_location.get_state(),
+                    'in_combat': self.combat_state,
+                    'player_hp': self.player.hp,
+                    'player_max_hp': self.player.max_hp,
+                    'enemy': self.game_world.current_state.get('current_enemy', {})
+                })
             
-            # Write the action result to the output
-            if 'message' in result:
-                self.write_to_output(result['message'])
+            # Handle music changes
+            if result.get('next_situation') == 'combat' and not self.combat_state:
+                if hasattr(self.audio_manager, 'change_music'):
+                    await self.audio_manager.change_music('combat')
+            elif result.get('next_situation') == 'exploration' and self.combat_state:
+                if hasattr(self.audio_manager, 'change_music'):
+                    await self.audio_manager.change_music('exploration')
+            
+            # Show the action result if it's not a new location
+            if result.get('message') and not result.get('new_location'):
+                self.write_to_output(f"{result['message']}\n")
             
             # Update status displays
             self.update_status()
@@ -602,10 +662,15 @@ Type your character's name and press Enter.
                 self.update_combat_status()
             
             return result
-        
+            
         except Exception as e:
-            self.write_to_output(f"\nError processing command: {str(e)}\n")
+            error_msg = f"\nError processing command: {str(e)}\n"
+            self.write_to_output(error_msg)
             self.write_to_output("\nAvailable commands: look, help\n")
+            await self.audio_manager.speak(
+                "Sorry, there was an error processing your command.",
+                voice=self.voice_var.get()
+            )
             return None
 
     def handle_initialization_complete(self, result):
@@ -765,6 +830,34 @@ async def test_audio_system(audio_manager):
         print(f"Audio test failed: {e}")
         return False
 
+def main():
+    # Load OpenAI API key
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not found in environment variables")
+
+    # Test basic audio first
+    if not test_audio():
+        print("Warning: Basic audio system not working properly")
+        
+    root = tk.Tk()
+    root.minsize(1200, 800)
+    
+    try:
+        # Initialize audio manager with OpenAI API key
+        audio_manager = AudioManager(api_key)
+        
+        # Create game GUI with audio manager
+        app = GameGUI(root=root, audio_manager=audio_manager)
+        app.configure_styles()
+        
+        root.protocol("WM_DELETE_WINDOW", app.cleanup)
+        root.mainloop()
+        
+    except Exception as e:
+        print(f"Error during initialization: {e}")
+        raise
+
 def test_audio():
     """Test basic audio functionality"""
     try:
@@ -790,35 +883,10 @@ def test_audio():
         
         print("Audio test successful!")
         return True
+        
     except Exception as e:
         print(f"Audio test failed: {e}")
         return False
-
-def main():
-    # Load OpenAI API key
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not found in environment variables")
-
-    # Test basic audio first
-    if not test_audio():
-        print("Warning: Basic audio system not working properly")
-        
-    root = tk.Tk()
-    root.minsize(1200, 800)
-    
-    # Initialize audio manager with OpenAI API key
-    audio_manager = AudioManager(api_key)
-    
-    # Test speech
-    audio_manager.speak("Testing audio system", voice="alloy")
-    
-    # Create game GUI
-    app = GameGUI(root=root, audio_manager=audio_manager)
-    app.configure_styles()
-    
-    root.protocol("WM_DELETE_WINDOW", app.cleanup)
-    root.mainloop()
 
 if __name__ == "__main__":
     main()
