@@ -1,5 +1,3 @@
-Certainly, here's a more detailed README file that includes the usage of the project's functions:
-
 # D&D AI Dungeon Master
 
 ## Introduction
@@ -106,9 +104,3 @@ The D&D AI Dungeon Master is designed to be customizable. You can modify the fol
   - `NPCFactory` class: Create new NPC types or modify the existing ones.
 - **Game Settings**: The `Settings` class in `settings.py` allows you to configure various game settings, such as difficulty, game mode, and more.
   - `get()` and `set()` methods: Retrieve and modify individual settings.
-
-## Contribution
-If you'd like to contribute to the D&D AI Dungeon Master project, feel free to submit a pull request with your improvements or additions. We welcome any feedback or suggestions to make the game more engaging and immersive.
-
-## License
-This project is licensed under the [MIT License](LICENSE)."# AI-DnD" 
